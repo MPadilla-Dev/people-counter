@@ -1,0 +1,24 @@
+# docker-compose.yml
+# Defines all services and how they connect
+
+services:
+
+  pipeline:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      # Mount local data/ folder into the container at /app/data
+      # This means the container reads YOUR CSV files
+      # Left side (./data) = your machine
+      # Right side (/app/data) = inside the container
+      - ./data:/app/data
+
+      # Mount local output/ folder into the container at /app/output
+      # This means Parquet files written inside the container
+      # appear on YOUR machine in output/
+      - ./output:/app/output
+    environment:
+      # Environment variables available inside the container
+      # We'll use these in Phase 6 for Django settings
+      - PYTHONUNBUFFERED=1
