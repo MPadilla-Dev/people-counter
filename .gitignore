@@ -18,3 +18,9 @@ Thumbs.db
 
 # Environment variables (secrets)
 .env
+
+# Generated pipeline output — never commit these
+output/
+
+# Raw data — large files, not source code
+data/
