@@ -16,17 +16,21 @@ def create_hourly_aggregations(conn: duckdb.DuckDBPyConnection) -> None:
 
     We also carry forward a quality flag: if ANY row in that hour had a
     null filled in, the whole hour is flagged as containing imputed data.
+    
+    CAST(...AS INTEGER) ensures people counts are whole numbers,
+    not floats. A null during aggregation can promote types to float64
+    without this explicit cast.
     """
     conn.execute("""
         CREATE OR REPLACE TABLE hourly_aggregations AS
         SELECT
             device_id,
-            DATE_TRUNC('hour', timestamp)    AS hour,
-            SUM(people_in)                   AS total_in,
-            SUM(people_out)                  AS total_out,
-            SUM(people_in) - SUM(people_out) AS net_flow,
-            MAX(in_was_null)                 AS has_imputed_in,
-            MAX(out_was_null)                AS has_imputed_out
+            DATE_TRUNC('hour', timestamp)                      AS hour,
+            CAST(SUM(people_in)                   AS INTEGER)  AS total_in,
+            CAST(SUM(people_out)                  AS INTEGER)  AS total_out,
+            CAST(SUM(people_in) - SUM(people_out) AS INTEGER)  AS net_flow,
+            MAX(in_was_null)                                   AS has_imputed_in,
+            MAX(out_was_null)                                  AS has_imputed_out
         FROM raw_events
         GROUP BY device_id, DATE_TRUNC('hour', timestamp)
         ORDER BY device_id, hour
@@ -45,15 +49,13 @@ def create_occupancy(conn: duckdb.DuckDBPyConnection) -> None:
     """
     Computes running occupancy per device using a window function.
 
-    A window function performs a calculation across a set of rows that are
-    related to the current row — without collapsing them into one like GROUP BY.
-
     SUM(net_flow) OVER (...) means:
         'for each row, sum all net_flow values from the first row up to
          and including this one, separately for each device, in time order'
 
-    This gives us cumulative occupancy at each hour.
-    Starting occupancy is assumed to be 0 (as per assignment spec).
+    occupancy_is_invalid flags rows where cumulative occupancy went
+    negative — preserved as-is rather than clamped, so the dashboard
+    can surface a warning without losing the raw signal.
     """
     conn.execute("""
         CREATE OR REPLACE TABLE occupancy AS
@@ -63,24 +65,31 @@ def create_occupancy(conn: duckdb.DuckDBPyConnection) -> None:
             total_in,
             total_out,
             net_flow,
-            SUM(net_flow) OVER (
-                PARTITION BY device_id
-                ORDER BY hour
-                ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-            )                   AS occupancy,
+            CAST(
+                SUM(net_flow) OVER (
+                    PARTITION BY device_id
+                    ORDER BY hour
+                    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                ) AS INTEGER
+            )                        AS occupancy,
+            CAST(
+                SUM(net_flow) OVER (
+                    PARTITION BY device_id
+                    ORDER BY hour
+                    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                ) < 0 AS INTEGER
+            )                        AS occupancy_is_invalid,
             has_imputed_in,
             has_imputed_out
         FROM hourly_aggregations
         ORDER BY device_id, hour
     """)
 
-    # Sanity check: occupancy should never go below 0
-    # A building can't have negative people — if it does, data has issues
-    negative = conn.execute("""
-        SELECT COUNT(*) FROM occupancy WHERE occupancy < 0
-    """).fetchone()[0]
-
     total = conn.execute("SELECT COUNT(*) FROM occupancy").fetchone()[0]
+    negative = conn.execute(
+        "SELECT COUNT(*) FROM occupancy WHERE occupancy < 0"
+    ).fetchone()[0]
+
     print(f"  Occupancy: {total} rows computed")
 
     if negative > 0:
@@ -91,19 +100,22 @@ def create_occupancy(conn: duckdb.DuckDBPyConnection) -> None:
 
 def create_daily_aggregations(conn: duckdb.DuckDBPyConnection) -> None:
     """
-    Bonus: rolls hourly data up to daily summaries.
+    Rolls hourly occupancy data up to daily summaries.
     Useful for trend views in the dashboard (zoomed-out view).
+
+    peak_occupancy and min_occupancy come from the pre-computed
+    occupancy column — not recalculated here.
     """
     conn.execute("""
         CREATE OR REPLACE TABLE daily_aggregations AS
         SELECT
             device_id,
-            DATE_TRUNC('day', hour)  AS date,
-            SUM(total_in)            AS total_in,
-            SUM(total_out)           AS total_out,
-            SUM(net_flow)            AS net_flow,
-            MAX(occupancy)           AS peak_occupancy,
-            MIN(occupancy)           AS min_occupancy
+            DATE_TRUNC('day', hour)                AS date,
+            CAST(SUM(total_in)       AS INTEGER)   AS total_in,
+            CAST(SUM(total_out)      AS INTEGER)   AS total_out,
+            CAST(SUM(net_flow)       AS INTEGER)   AS net_flow,
+            CAST(MAX(occupancy)      AS INTEGER)   AS peak_occupancy,
+            CAST(MIN(occupancy)      AS INTEGER)   AS min_occupancy
         FROM occupancy
         GROUP BY device_id, DATE_TRUNC('day', hour)
         ORDER BY device_id, date
