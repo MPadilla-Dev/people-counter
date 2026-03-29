@@ -212,6 +212,33 @@ could display a warning icon on flagged hours, or an analyst could exclude flagg
 rows from a report. Silently filling without flagging would make the imputation 
 invisible and unauditable.
 
+### Negative Values — Drop and Report
+
+People counts cannot be negative. A row where `in = -3` represents 
+either a sensor firmware bug, data corruption during transmission, or 
+a calibration error. Three options were considered: treating negative 
+values as nulls and filling with 0 (wrong — it would silently add 
+phantom zero-traffic hours), passing them through and letting occupancy 
+handle the anomaly (wrong — it corrupts cumulative calculations), or 
+dropping the row entirely and reporting it (correct).
+
+Rows with negative `in` or `out` values are dropped during ingestion 
+before the cleaned table is created. The count of dropped rows is 
+reported in pipeline logs alongside the null count. Both are surfaced 
+together because they have the same root cause — unreliable sensor 
+hardware — and the same operational response: investigate the specific 
+device that produced them.
+
+### Float Values in Integer Columns
+
+If a sensor produces `in = 3.7` (possible if firmware averages readings), 
+`TRY_CAST` to INTEGER returns NULL, which is then filled with 0 and 
+flagged as imputed. The fractional value is lost. This is acceptable 
+for a people-counting context where fractional people are meaningless, 
+but the flag ensures the imputation is visible. A production system 
+might instead round to the nearest integer before casting, which would 
+be a more faithful representation of the original reading.
+
 ### Out-of-Order Timestamps
 
 The source data contained rows where an `08:10:00` timestamp appeared after a 
@@ -323,23 +350,53 @@ latency requirement.
 
 ### Incremental Checkpointing
 
-At large scale, recalculating occupancy from the beginning of recorded history 
-on every pipeline run becomes impractical. The amount of work grows indefinitely 
-even though only a small amount of new data arrives each run.
+The current pipeline recalculates occupancy from row one on every run. 
+At small scale this is fine. At large scale — years of data across 
+thousands of devices — the amount of work grows indefinitely even 
+though only one new day of data arrives each night.
 
-The production solution is incremental checkpointing: at the end of each run, 
-store the final occupancy value per device as a checkpoint. On the next run, 
-load the checkpoint as the starting value and process only new data:
-```
-Run 1: process Jan 1 → ending occupancy: {device_A: 0, device_B: 12} → save checkpoint
-Run 2: load checkpoint → process Jan 2 only → save new checkpoint
-Run N: load checkpoint → process day N only → constant work per run
+The production solution is incremental checkpointing. At the end of 
+each pipeline run, the ending occupancy per device is saved to a 
+checkpoint file:
+```json
+{
+    "device_A": {
+        "last_processed_date": "2024-01-01",
+        "ending_occupancy": 0,
+        "run_timestamp": "2024-01-02T00:00:00"
+    },
+    "device_B": {
+        "last_processed_date": "2024-01-01",
+        "ending_occupancy": 12,
+        "run_timestamp": "2024-01-02T00:00:00"
+    }
+}
 ```
 
-This requires combining two approaches: checkpointing across runs (to know where 
-to start) and window functions within each run (to calculate across that day's 
-rows). LAG would not work here because it has no memory between separate pipeline 
-runs — the checkpoint file provides that memory.
+The next run loads this checkpoint and processes only new files:
+```
+Run 1 (Jan 1 data):
+  No checkpoint → process all data
+  Save checkpoint: {device_A: ending_occupancy=0, device_B: ending_occupancy=12}
+
+Run 2 (Jan 2 data arrives):
+  Load checkpoint → device_A starts at 0, device_B starts at 12
+  Process ONLY Jan 2 files
+  Window function starts from checkpoint values, not zero
+  Save new checkpoint: {device_A: 8, device_B: 16}
+
+Run N: constant work regardless of total historical data size
+```
+
+This only changes the ingestion layer — the transform and output logic 
+stays identical. The checkpoint value is injected as a starting offset 
+before the window function runs. LAG would not work here because it 
+has no memory between separate pipeline runs — the checkpoint file 
+provides that cross-run memory.
+
+This was not implemented in the current pipeline because with two days 
+of data the performance difference is zero and the added complexity 
+would obscure the core pipeline logic.
 
 ### Granularity
 
@@ -389,6 +446,14 @@ would be disabled or restricted on the public network.
 is single-threaded and not designed for production traffic. A production 
 deployment would use Gunicorn or uWSGI behind an Nginx reverse proxy.
 
+**Bronze layer** — the current pipeline reads raw CSVs and cleans them 
+in a single ingestion step. A production system would preserve a bronze 
+layer — an immutable copy of raw data exactly as received — before any 
+cleaning or transformation. Our data/ folder serves this purpose 
+informally (the pipeline never modifies source files), but a formal 
+bronze layer would store timestamped copies of every file received, 
+enabling full reprocessing from the original source if cleaning logic 
+needs to change.
 ---
 
 ## 8. Assumptions

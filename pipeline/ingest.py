@@ -57,18 +57,18 @@ def load_raw_events(data_dir: str, conn: duckdb.DuckDBPyConnection) -> None:
         # We cast types explicitly so we control what happens with bad data
         query_part = f"""
             SELECT
-                '{device_name}'                             AS device_id,
-                TRY_CAST(timestamp AS TIMESTAMP)            AS timestamp,
-                COALESCE(TRY_CAST("in"  AS INTEGER), 0)    AS people_in,
-                COALESCE(TRY_CAST("out" AS INTEGER), 0)     AS people_out,
-                CASE 
-                    WHEN TRY_CAST("in"  AS INTEGER) IS NULL THEN 1 
-                    ELSE 0 
-                END                                         AS in_was_null,
-                CASE 
-                    WHEN TRY_CAST("out" AS INTEGER) IS NULL THEN 1 
-                    ELSE 0 
-                END                                         AS out_was_null
+                '{device_name}'                              AS device_id,
+                TRY_CAST(timestamp AS TIMESTAMP)             AS timestamp,
+                COALESCE(TRY_CAST("in"  AS INTEGER), 0)     AS people_in,
+                COALESCE(TRY_CAST("out" AS INTEGER), 0)      AS people_out,
+                CASE WHEN TRY_CAST("in"  AS INTEGER) IS NULL 
+                    THEN 1 ELSE 0 END                       AS in_was_null,
+                CASE WHEN TRY_CAST("out" AS INTEGER) IS NULL 
+                    THEN 1 ELSE 0 END                       AS out_was_null,
+                CASE WHEN TRY_CAST("in"  AS INTEGER) < 0    
+                    THEN 1 ELSE 0 END                       AS in_was_negative,
+                CASE WHEN TRY_CAST("out" AS INTEGER) < 0    
+                    THEN 1 ELSE 0 END                       AS out_was_negative
             FROM read_csv_auto('{path}', header=true)
         """
         union_parts.append(query_part)
@@ -84,6 +84,8 @@ def load_raw_events(data_dir: str, conn: duckdb.DuckDBPyConnection) -> None:
             {full_query}
         ) combined
         WHERE timestamp IS NOT NULL
+        AND people_in  >= 0
+        AND people_out >= 0
         ORDER BY device_id, timestamp
     """)
 
@@ -91,13 +93,16 @@ def load_raw_events(data_dir: str, conn: duckdb.DuckDBPyConnection) -> None:
     total = conn.execute("SELECT COUNT(*) FROM raw_events").fetchone()[0]
     nulls_filled = conn.execute("""
         SELECT 
-            SUM(in_was_null)  AS in_nulls_filled,
-            SUM(out_was_null) AS out_nulls_filled
+            SUM(in_was_null)      AS in_nulls_filled,
+            SUM(out_was_null)     AS out_nulls_filled,
+            SUM(in_was_negative)  AS in_negatives_dropped,
+            SUM(out_was_negative) AS out_negatives_dropped
         FROM raw_events
     """).fetchone()
 
     print(f"  Loaded {total} valid rows into raw_events")
-    print(f"  Nulls filled with 0 → people_in: {nulls_filled[0]}, people_out: {nulls_filled[1]}")
+    print(f"  Nulls filled with 0   → people_in: {nulls_filled[0]}, people_out: {nulls_filled[1]}")
+    print(f"  Negatives dropped     → people_in: {nulls_filled[2]}, people_out: {nulls_filled[3]}")
     print(f"  These rows are flagged in in_was_null / out_was_null columns\n")
 
 

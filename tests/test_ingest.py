@@ -134,3 +134,54 @@ def test_empty_data_dir_raises_error():
         conn = get_db_connection()
         with pytest.raises(FileNotFoundError):
             load_raw_events(tmpdir, conn)
+
+def test_negative_values_are_handled():
+    """
+    Negative counts are physically impossible.
+    They should be treated as invalid and either dropped or flagged.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        device_dir = os.path.join(tmpdir, "device_A")
+        make_csv(device_dir, "2024-01-01.csv", [
+            {"timestamp": "2024-01-01T08:00:00", "in": -3, "out": 1},
+            {"timestamp": "2024-01-01T09:00:00", "in": 5,  "out": 1},
+        ])
+
+        conn = get_db_connection()
+        load_raw_events(tmpdir, conn)
+
+        # The negative row should be dropped
+        count = conn.execute("SELECT COUNT(*) FROM raw_events").fetchone()[0]
+        assert count == 1, f"Expected 1 valid row, got {count}"
+
+def test_raw_events_has_quality_flag_columns():
+    """
+    raw_events must contain all quality flag columns so downstream
+    transforms and reports can use them.
+    This acts as a schema contract test for the ingestion layer.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        device_dir = os.path.join(tmpdir, "device_A")
+        make_csv(device_dir, "2024-01-01.csv", [
+            {"timestamp": "2024-01-01T08:00:00", "in": 5, "out": 2},
+        ])
+
+        conn = get_db_connection()
+        load_raw_events(tmpdir, conn)
+
+        columns = [
+            row[0] for row in
+            conn.execute("DESCRIBE raw_events").fetchall()
+        ]
+
+        expected = [
+            "device_id", "timestamp", "people_in", "people_out",
+            "in_was_null", "out_was_null",
+            "in_was_negative", "out_was_negative"
+        ]
+
+        for col in expected:
+            assert col in columns, (
+                f"Expected column '{col}' in raw_events, not found.\n"
+                f"Actual columns: {columns}"
+            )
