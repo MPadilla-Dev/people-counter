@@ -13,21 +13,7 @@ import duckdb
 from pipeline.ingest import load_raw_events, get_db_connection
 
 
-def make_csv(folder: str, filename: str, rows: list[dict]) -> str:
-    """
-    Helper: writes a CSV file to a temp folder.
-    Returns the full path of the created file.
-    """
-    os.makedirs(folder, exist_ok=True)
-    filepath = os.path.join(folder, filename)
-    with open(filepath, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["timestamp", "in", "out"])
-        writer.writeheader()
-        writer.writerows(rows)
-    return filepath
-
-
-def test_loads_valid_rows():
+def test_loads_valid_rows(make_csv):
     """Basic case: valid CSV loads all rows correctly."""
     with tempfile.TemporaryDirectory() as tmpdir:
         device_dir = os.path.join(tmpdir, "device_A")
@@ -43,7 +29,7 @@ def test_loads_valid_rows():
         assert count == 2, f"Expected 2 rows, got {count}"
 
 
-def test_device_id_extracted_from_folder():
+def test_device_id_extracted_from_folder(make_csv):
     """device_id should come from the folder name, not the file."""
     with tempfile.TemporaryDirectory() as tmpdir:
         device_dir = os.path.join(tmpdir, "device_TEST")
@@ -61,7 +47,7 @@ def test_device_id_extracted_from_folder():
         assert device_id == "device_TEST", f"Expected 'device_TEST', got '{device_id}'"
 
 
-def test_null_out_is_filled_and_flagged():
+def test_null_out_is_filled_and_flagged(make_csv):
     """
     A missing 'out' value should become 0 AND be flagged.
     This tests both the fill and the audit trail.
@@ -85,7 +71,7 @@ def test_null_out_is_filled_and_flagged():
         assert row[1] == 1,  f"Expected out_was_null=1, got {row[1]}"
 
 
-def test_invalid_timestamp_row_is_dropped():
+def test_invalid_timestamp_row_is_dropped(make_csv):
     """
     Rows with unparseable timestamps should be silently dropped,
     not crash the pipeline.
@@ -104,7 +90,7 @@ def test_invalid_timestamp_row_is_dropped():
         assert count == 1, f"Expected 1 valid row, got {count}"
 
 
-def test_timestamps_are_sorted():
+def test_timestamps_are_sorted(make_csv):
     """
     Rows should come out sorted by timestamp regardless of
     the order they appear in the CSV file.
@@ -135,7 +121,7 @@ def test_empty_data_dir_raises_error():
         with pytest.raises(FileNotFoundError):
             load_raw_events(tmpdir, conn)
 
-def test_negative_values_are_handled():
+def test_negative_values_are_handled(make_csv):
     """
     Negative counts are physically impossible.
     They should be treated as invalid and either dropped or flagged.
@@ -154,7 +140,7 @@ def test_negative_values_are_handled():
         count = conn.execute("SELECT COUNT(*) FROM raw_events").fetchone()[0]
         assert count == 1, f"Expected 1 valid row, got {count}"
 
-def test_raw_events_has_quality_flag_columns():
+def test_raw_events_has_quality_flag_columns(make_csv):
     """
     raw_events must contain all quality flag columns so downstream
     transforms and reports can use them.
