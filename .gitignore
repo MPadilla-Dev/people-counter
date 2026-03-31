@@ -24,3 +24,6 @@ output/
 
 # Raw data — large files, not source code
 data/
+
+# Claude Code context file
+CLAUDE.md
