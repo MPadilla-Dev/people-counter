@@ -65,6 +65,25 @@ Ctrl+C
 docker compose down
 ```
 
+## Testing the API
+
+While `docker compose up` is running, the API is available 
+at http://localhost:8000.
+
+**Browser** — open any endpoint URL directly, Django REST Framework renders a browsable interface automatically.
+
+**curl (Mac/Linux)**
+```bash
+curl http://localhost:8000/api/devices/
+curl "http://localhost:8000/api/hourly/?device_id=device_A"
+```
+
+**PowerShell (Windows)**
+```powershell
+Invoke-RestMethod http://localhost:8000/api/devices/
+Invoke-RestMethod "http://localhost:8000/api/hourly/?device_id=device_A"
+```
+
 ---
 
 ## Project Structure
