@@ -71,6 +71,14 @@ loading them into memory first, and its SQL dialect is standard enough that the
 same queries port to BigQuery or Snowflake with minimal changes if scale eventually 
 requires a distributed system.
 
+DuckDB handles datasets larger than available RAM by automatically 
+spilling intermediate results to disk when memory pressure is high. 
+This degrades performance but prevents crashes — a meaningful 
+difference from Pandas, which raises a MemoryError and terminates 
+the process when the dataset exceeds available RAM. At the current 
+dataset size (25 rows) this distinction is irrelevant. At 100x scale 
+it determines whether the pipeline runs slowly or does not run at all.
+
 ### Parquet
 Pipeline output is stored as Parquet rather than CSV for five specific reasons:
 
@@ -454,6 +462,49 @@ informally (the pipeline never modifies source files), but a formal
 bronze layer would store timestamped copies of every file received, 
 enabling full reprocessing from the original source if cleaning logic 
 needs to change.
+
+**Drift correction** — occupancy is derived by accumulating sensor 
+flow measurements over time. Any measurement error — a missed exit, 
+a null filled with 0, a miscalibrated sensor — compounds permanently 
+into the cumulative sum. This is called drift, and it is an inherent 
+risk in any system that derives state from accumulated flow data.
+
+In production, drift is typically discovered when a dashboard user 
+notices occupancy values that are physically implausible (e.g. 847 
+people in a 200-person building). By that point the error may have 
+accumulated across several days of pipeline runs.
+
+The correction workflow has two parts. First, a corrections file 
+provides ground truth occupancy values at known points in time — 
+typically taken from a manual count or a security system reset:
+```csv
+timestamp,           device_id, actual_occupancy
+2024-01-02T09:00:00, device_A,  0
+2024-01-03T09:00:00, device_A,  0
+```
+
+Second, the occupancy window function restarts its accumulation from 
+the most recent correction value before each row, rather than always 
+starting from zero at the beginning of the dataset. Only the transform 
+layer changes — ingestion and output are unaffected.
+
+This is a standard **backfill** operation in production data 
+engineering: reprocessing historical data with corrected inputs, 
+rewriting the affected Parquet partitions, and reloading Django's 
+database. The correction is not instantaneous — it takes effect on 
+the next pipeline run, which is acceptable in a batch system where 
+nightly updates are the norm.
+
+If immediate correction is required, a Django management command can 
+patch the occupancy values directly in the serving database as a 
+temporary measure, with the understanding that the pipeline's next 
+run will overwrite it unless the source correction is also applied.
+
+For locations with guaranteed empty periods (retail stores, offices), 
+a simpler alternative is a daily partition reset — changing 
+`PARTITION BY device_id` to `PARTITION BY device_id, DATE_TRUNC('day', hour)` 
+in the occupancy window function. One line change that eliminates 
+drift entirely for predictable operating patterns.
 ---
 
 ## 8. Assumptions

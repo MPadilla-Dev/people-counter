@@ -53,7 +53,7 @@ def load_raw_events(data_dir: str, conn: duckdb.DuckDBPyConnection) -> None:
     union_parts = []
 
     for device_name, path in device_files:
-        # DuckDB can read CSVs directly — no need to load into Pandas first
+        # DuckDB can read CSVs directly
         # We cast types explicitly so we control what happens with bad data
         query_part = f"""
             SELECT
