@@ -6,3 +6,4 @@ __pycache__/
 .git/
 .pytest_cache/
 *.parquet
+CLAUDE.md
